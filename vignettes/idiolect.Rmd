@@ -1,0 +1,285 @@
+---
+title: "idiolect"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{idiolect}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+bibliography: references.bib
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(idiolect)
+```
+
+`idiolect` is a package that depends on `quanteda` for all the main Natural Language Processing functions. Although the basic object types and functions are described in detail in the documentation of this package, familiarity with `quanteda` is highly recommended. More information about `quanteda` can be found on its [website](http://quanteda.io).
+
+# Introduction
+
+Authorship Analysis is defined as the task of determining the likelihood that a certain candidate is the author of a certain set of questioned or disputed texts. We call *Forensic* Authorship Analysis a task of this kind applied in a real forensic case. In such settings, the disputed texts could be anonymous malicious documents, such as a threatening letter, but could also be text messages, emails, or any other document that, for various reasons, becomes evidence in a forensic case. In Forensic Linguistics, typically a set of disputed or *questioned* text is indicated as $Q$, while a set of texts of known origin, for example the texts written by the candidate author and collected as comparison material, is labelled using $K$. In addition to these two datasets, the analysis also necessitates of a comparison reference corpus that we call $R$. In a classic case involving a closed set of suspects, the texts written by the suspects minus the candidate form $R$. In *Authorship Verification* cases that only involve one candidate author, then the reference dataset might have to be compiled by the analyst for the specific case [@ishihara2024].
+
+A crucial difference between Authorship Analysis and Forensic Authorship Analysis is that whereas the former can be treated as a classification task where the final answer is binary ('candidate is the author' vs. 'candidate is NOT the author'), the latter needs an expression of likelihood for the two competing propositions or hypotheses, the Prosecution Hypothesis $H_p$ vs. the Defence Hypothesis $H_d$, for example:
+
+| $H_p$: The author of $K$ and the author of $Q$ are the same individual.
+| $H_d$: The author of $K$ and the author of $Q$ are two different individuals.
+
+The job of the forensic linguist in a forensic context is to analyse the linguistic evidence and determine which hypothesis it supports and with what degree of strength, thus aiding the trier-of-fact in reaching a conclusion. The role of the forensic linguist is therefore not to provide a YES/NO answer but rather to express the strength of the evidence in favour of each of these two hypotheses.
+
+Given $K$, $Q$ and $R$, the workflow for this analysis involves four steps:
+
+1.  **Preparation**: This step involves any pre-processing step that is necessary for the analysis with the chosen method;
+2.  **Validation**: Carry out an analysis on the case data or on a separate dataset that has been designed to be similar to the case material in order to validate the method for this particular case;
+3.  **Analysis**: Carry out the analysis on the real $K$, $Q$, and $R$;
+4.  **Calibration**: Turn the output of (3) into a Likelihood Ratio that expresses the strength of the evidence given the two competing hypotheses.
+
+# Preparation
+
+`idiolect` has a function to import texts into `R` called `create_corpus()`. This function is simply calling `readtext` (therefore this package must be installed) while scanning the name of the files for the metadata of each text, specifically the name of the author and the name of the file. The syntax to follow to name the files is
+
+| authorname_textname.txt (e.g. smith_text1.txt).
+
+Assuming that a folder of plain text files with names according to this syntax are ready on the user's computer, then the following command (not executed here) loads the folder as a `quanteda` corpus object with the metadata as `docvars`.
+
+```{r eval=FALSE, include=TRUE}
+corpus <- create_corpus("path/to/folder")
+```
+
+In this vignette, instead, the workflow is demonstrated using a small dataset of the Enron corpus that is included in this package (see `?enron.sample`).
+
+```{r}
+corpus <- enron.sample
+```
+
+This corpus is a `quanteda` corpus object that contains ten authors with approximately the same amount of data.
+
+## Content masking
+
+A highly recommended and sometimes necessary pre-processing step is content masking. This step consists in masking or removing words or other tokens in the text that are likely to create noise for an authorship analysis. Hiding content not only avoids incorrectly attributing a text based on the correlation between topics and authors [@bischoff] but also tends to improve the performance of authorship analysis methods in cross-topic and cross-genre situations [@stamatatos2017].
+
+Three content masking methods are implemented in `idiolect`: (1) the *POSnoise* algorithm developed by @halvani2021; (2) the *frame n-grams* approach introduced by @nini2023; and (3) an implementation of the *TextDistortion* approach originally introduced by @stamatatos2017. These options are available in the `contentmask()` function. Because this function depends on [`spacyr`](https://spacyr.quanteda.io/reference/spacyr-package.html) and this requires downloading a parsing model for a language for the automatic tagging of Parts of Speech (e.g. nouns, adjectives, adverbs), this function is not run in this vignette. Instead, the Enron sample has already been content-masked using *POSnoise*, as can be seen from the preview of the corpus
+
+```{r}
+corpus
+```
+
+The *POSnoise* algorithm essentially replaces all words that tend to contain meaning (nouns, verbs, adjectives, adverbs) with their Part of Speech tag (N, V, J, B) while all the other words or tokens are left unchanged. In addition to this operation, *POSnoise* contains a white list of content words that mostly tend to be functional in English, such as verbs like *do, have, make* or adverbs such as *consequently*, *therefore*.
+
+The following code should be used to run the `contentmask()` function. This will require installing and initiating a [*spacy*](https://spacy.io) parsing model for the language chosen. This process should happen automatically
+
+```{r eval=FALSE, include=TRUE}
+posnoised.corpus <- contentmask(corpus, model = "en_core_web_sm", algorithm = "POSnoise")
+```
+
+## Data labelling
+
+In this example it is simulated that the first text written by the author *Kw* is the real $Q$ text (the one labelled as 'unknown') and all the other known texts written by *Kw* (labelled as 'known') are therefore the set of known texts $K$. The remaining texts from the other authors are the reference samples $R$.
+
+```{r}
+Q <- corpus_subset(corpus, author == "Kw")[1]
+K <- corpus_subset(corpus, author == "Kw")[2:5]
+R <- corpus_subset(corpus, author != "Kw")
+```
+
+## Vectorisation
+
+Before applying certain authorship analysis methods, each text or sample must be turned into a numerical representation called a *feature vector*, a process typically referred to as *vectorisation*. `idiolect` has a function to vectorise a corpus called `vectorize()`. The features normally used by many authorship analysis methods are $n$-grams of words and punctuation marks or characters. For example, the $Q$ text can be vectorised into the relative frequencies of its words using this code.
+
+```{r}
+vectorize(Q, tokens = "word", remove_punct = F, remove_symbols = T, remove_numbers = T,
+          lowercase = T, n = 1, weighting = "rel", trim = F) |> 
+  print(max_nfeat = 3)
+```
+
+or, as the most frequent 1,000 character 4-grams relative frequencies, for example, using
+
+```{r}
+vectorize(Q, tokens = "character", remove_punct = F, remove_symbols = T, remove_numbers = T,
+          lowercase = T, n = 4, weighting = "rel", trim = T, threshold = 1000) |> 
+  print(max_nfeat = 3)
+```
+
+The output of the function is a `quanteda` *document-feature matrix* (or *dfm*) that can efficiently store even very large matrices.
+
+This `vectorize()` function is mostly designed for expert users because different choices in the parameters of the vectorisation can be made using each single authorship analysis method function. In addition, since most authorship analysis methods already have a default setting of these parameters, these are already the default for the authorship analysis functions.
+
+This step is therefore not necessary unless there are specific requirements as any vectorisation is handled by the functions that apply the authorship analysis methods.
+
+# Validation
+
+The first step of the validation is to remove the real $Q$ text. This is the actual forensic sample to analyse and it must be therefore removed when validating the analysis. The validation set is therefore made up of only the $K$ and $R$ datasets
+
+```{r}
+validation <- K + R
+```
+
+This dataset can now be re-divided into 'fake' $Q$ texts and 'fake' $K$ texts. Each text in this corpus is labelled as 'unknown' or 'known' so two new disjoint datasets, `validation.Q` and `validation.K` can be created by selecting the texts based on this label.
+
+```{r}
+validation.Q <- corpus_subset(validation, grepl("^unknown", docnames(validation)))
+validation.K <- corpus_subset(validation, grepl("^known", docnames(validation)))
+```
+
+This is not the only way in which a validation analysis can be conducted. For example, one could adopt a leave-one-out approach by taking each single text and treat it as a $Q$ and then run an authorship analysis method for each one of them. Alternatively, a completely different dataset that is similar to the case data could be used. This simpler approach is more suitable for this small example.
+
+## Authorship analysis
+
+The analysis that is being validated is the same analysis that will be applied to the $Q$ text. Therefore, a choice of method has to be made depending on the right choice to analyse $Q$. In this example, the scenario simulated is a *verification*: was the unknown $Q$ text written by the $K$ author, *Kw*? For this reason, the method chosen is one of the most successful authorship verification methods available today, the *Impostors Method* [@koppel2014], and in particular one of its latest variants called the *Rank-Based Impostors Method* [@potha2017; @potha2020].
+
+This analysis can be run in `idiolect` using the function `impostors()` and then selecting the default parameter for the *algorithm* argument, "*RBI*". The main argument of this function are the *q.data*, which is the set of $Q$ texts to test, and the *k.data*, which is the set of $K$ texts from one or more authors that are going to be tested, and finally the set of impostors data, *cand.imps*. For this example, the impostors data is $R$ set but generally the recommendation is to use another dataset when possible.
+
+The `impostors()` function accepts more than one author in *k.data* and it also accepts the same dataset as input for both *k.data* and *cand.imps*. When the same dataset is used, `impostors()` will test each author in *k.data* and use the texts written by other authors as impostors.
+
+In contrast to other authorship analysis functions like `delta()` and `ngram_tracing()`, `impostors()` does not offer additional parameters to modify the vectorisation process because all the Impostors Method algorithms already have a well-specified default setting. If the user wants to change that they should then vectorise the corpus separately using `vectorize()` and then use the *dfm* as the input of `impostors()`.
+
+The RBI variant of the method also requires setting a parameter called $k$, which is the number of most similar impostors texts to sample from the wider set of impostors. The recommended setting is $k=100$ or $k=300$ but for simplicity this is set to $k=50$ in this example.
+
+Because an analysis using the Impostors Method can have long run times, this function can also be parallelised using more than one core.
+
+```{r include=FALSE}
+set.seed(2)
+```
+
+```{r warning=FALSE}
+res <- impostors(validation.Q, validation.K, validation.K, algorithm = "RBI", k = 50)
+```
+
+The output of `impostors()` is a data frame showing the results of comparing each $K$ author with each $Q$ text. The variable *target* is TRUE if the comparison is a same-author one or FALSE if it is a different-author one. The variable *score* contains the Impostors score, which is a value that ranges from 0 to 1. Other authorship analysis functions return the same data frame type with the same columns. The variable *score* therefore represents different quantities depending on the analysis function used (e.g. for `delta()`, this is the $\Delta$ coefficient, and so on).
+
+```{r paged.print=TRUE}
+res[1:10,]
+```
+
+In order to assess the results of this validation analysis, the function `performance()` can be used to return a series of performance metrics. This function can take one or two result data frames as input. If two are provided, then one is used as training and the other one as test. If only one data frame is provided, then the performance metrics are calculated using a leave-one-out approach.
+
+The procedure followed by this function is to held out one text (if leave-one-out, otherwise the test dataset in its entirety) and then use the rest of the data (or the training dataset) as a calibration dataset to calculate a *Log-Likelihood Ratio* ($LLR$). This analysis is done using the `calibrate_LLR()` function, which fits a logistic regression model to calibrate the score into a $LLR$ [@morrison2013, @ishihara2021] using the `ROC` library [@vanleeuwen2015].
+
+The output of the function is the following
+
+```{r message=FALSE, warning=FALSE, paged.print=TRUE}
+p <- performance(res)
+p$evaluation
+```
+
+The $C_{llr}$ and $C_{llr}^{min}$ coefficients are used to evaluate the performance of the $LLR$ [@ramos2013]. These coefficients estimate the cost of the $LLR$, where a value of 1 indicates no information in the $LLR$ and a lower coefficient $C_{llr}<1$ suggests that there is information in the $LLR$, with lower values of $C_{llr}$ suggesting better performance. The other binary classification metrics returned, such as Precision, Recall, and F1, are all calculated using $LLR > 0$ as the threshold for a TRUE (or same-author in this case) classification.
+
+In the present example, a $C_{llr}=$ `r round(p$evaluation$Cllr, 3)` suggests that there is enough information in the $LLR$ to be able to proceed with the actual forensic analysis. The $C_{llr}^{min}$, which is the component of $C_{llr}$ measuring the amount of discrimination, is even lower, which means that there is a substantial difference in the two distributions. This is confirmed by the Area Under the Curve value of `r round(p$evaluation$AUC, 3)`. Because of the large disparity between the TRUE and FALSE test cases, the values of Precision and F1 are misleading. The Balanced Accuracy value of `r round(p$evaluation$"Balanced Accuracy",3)`, however, again suggests a substantial amount of discrimination at $LLR=0$.
+
+The results of the analysis can also be plotted using a density plot for each of the two distributions, TRUE and FALSE. This can be done using the `density_plot()` function
+
+```{r fig.height=4, fig.width=6, fig.dpi=110}
+density_plot(res)
+```
+
+This plot shows the values of the score on the horizontal axis and the density for TRUE (red) vs. FALSE (blue) on the vertical axis.
+
+These findings are evidence that the method is validated for this dataset and it is now possible to analyse the $Q$ text and use these results to calibrate the $LLR$ for $Q$.
+
+# Analysis of $Q$
+
+At this point the only thing left to do is to analyse the forensic data by feeding the real $Q$, $K$, and $R$ into the `impostors()` function using the same settings used for the validation.
+
+```{r include=FALSE}
+set.seed(10)
+```
+
+```{r warning=FALSE}
+q.res <- impostors(Q, K, R, algorithm = "RBI", k = 50)
+```
+
+Because there is only one $Q$ text, the final table of results only contains one row
+
+```{r}
+q.res
+```
+
+## Qualitative examination of evidence
+
+Before reaching the conclusions, it is often important to inspect the features that the algorithm has considered for the analysis. In a forensic analysis, good knowledge of the data is important and best practice require the analyst to be very familiar with the dataset before running a computational analysis. Reading the data and being familiar with it can lead to the addition of more pre-processing steps to remove noise and can help the analyst spot any problem mistakenly introduced by the algorithm.
+
+In addition to familiarise themselves with the data, `idiolect` allows the analyst to explore the most important feature considered by the authorship analysis method used. For example, when using the RBI algorithm with `impostors()` then the parameter *features* can be switched to TRUE to obtain a list of important features. Running this again with this parameter switched on produces the following results
+
+```{r include=FALSE}
+set.seed(2)
+```
+
+```{r message=FALSE, warning=FALSE}
+q.res2 <- impostors(Q, K, R, algorithm = "RBI", k = 50, features = T)
+strwrap(q.res2$features, width = 70)
+```
+
+The RBI method uses as features character 4-grams and a list of these features is clearly hard to interpret by a human analyst. Despite the complexity, this is not an impossible task. `idiolect` offers a function to aid exploration called `concordance()`, which uses `quanteda`'s `kwic()` as its engine.
+
+`concordance()` takes as input a string representing one or more words (or punctuation marks). For example, the most important character 4-gram seems to be \<*, her*\> so this could be the search target.
+
+```{r}
+concordance(Q, K, R, search = ", her", token.type = "character") |> 
+  dplyr::select(pre, node, post, authorship)
+```
+
+The search reveals that this character sequence is a strong characteristic of the candidate author's writing. However, the real underlying pattern is not the use of a comma followed by the possessive determiner *her* but the token sequence [*, here is*], which is only used by the candidate author and one other author in the reference corpus.
+
+```{r}
+concordance(Q, K, R, search = ", here is", token.type = "word") |> 
+  dplyr::select(pre, node, post, authorship)
+```
+
+Another important feature is represented by the two character 4-grams, \<*lso ,*\> and \<*so ,* \>, which are likely to refer to the token sequence [*also ,*].
+
+```{r}
+concordance(Q, K, R, search = "lso ,", token.type = "character") |> 
+  dplyr::select(pre, node, post, authorship)
+```
+
+This is correct and it is referring to the use of *also* at the beginning of a sentence and immediately followed by a comma.
+
+Although searching all the features returned is clearly a significant amount of work, by inspecting the list of features carefully and by using `concordance()` to explore the features in the data the analyst can spot patterns or mistakes in the analysis [@ypma2023].
+
+## Conclusions
+
+Although the score assigned to $Q$ is high, depending on the calibration data, it can correspond to various magnitudes of the $LLR$.
+
+The $LLR$ value for $Q$ can also be plotted onto the TRUE vs. FALSE distributions using the second argument of `density_plot()`. The *q* argument can be used to draw a black vertical line that crosses the two distributions at the horizontal axis corresponding to the score of $Q$.
+
+```{r fig.height=4, fig.width=6, fig.dpi=110}
+density_plot(res, q = q.res$score)
+```
+
+To perform this calibration the `calibrate_LLR()` function is used again by using the validation results as calibration data
+
+```{r}
+q.llr <- calibrate_LLR(res, q.res, latex = T)
+q.llr$`Verbal label`
+strwrap(q.llr$Interpretation)
+```
+
+This function not only returns the $LLR$ value but also the verbal labels and their interpretation [@marquis2016].
+
+The final conclusion of the analysis is therefore the following:
+
+> The similarity score of $Q$ given $K$ is 0.975, which corresponds to $LLR=$ `r q.llr$LLR`. `r q.llr$Interpretation`. Therefore, the linguistic analysis offers **`r q.llr$"Verbal label"`**.
+
+This conclusion can be complemented with an explanation of the implication of these results for the trier of facts by showing a table of posterior probabilities assuming a range of prior probabilities. This can be done with the `posterior()` function by inserting as input the value of the $LLR$
+
+```{r}
+posterior(q.llr$LLR) |> 
+  dplyr::select(prosecution_prior_probs, prosecution_post_probs)
+```
+
+The table above reveals that, assuming a prior probability for $H_p$ of 0.00001 (roughly, one out of the population of Manchester), then this $LLR$ would transform this probability to a posterior probability for $H_p$ of 0.000027. In other words, it would not make much substantial difference for the trial.
+
+However, if the prior probability of $H_p$ was 0.5, then these results would turn it to 0.96, which is a substantial change.
+
+The table shows that the present evidence could change the probability that $H_p$ is true to equal or higher than 0.9 only with a prior greater than 0.2.
+
+# Acknowledgements
+
+I would like to thank Shunichi Ishihara and Marie Bojsen-Møller for helpful comments on the first draft of this vignette.
+
+# References
