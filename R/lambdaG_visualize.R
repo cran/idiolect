@@ -8,8 +8,10 @@
 #' @param N The order of the model. Default is 10.
 #' @param r The number of iterations. Default is 30.
 #' @param output A string detailing the file type of the colour-coded text output. Either "html" (default) or "latex".
-#' @param print A string indicating the path to the folder where to print a colour-coded text file. If left empty (default), then nothing is printed.
+#' @param print A string indicating the path and filename to save the colour-coded text file. If left empty (default), then nothing is printed.
 #' @param scale A string indicating what scale to use to colour-code the text file. If "absolute" (default) then the raw \eqn{\lambda_G} is used; if "relative", then the z-score of \eqn{\lambda_G} over the Q data is used instead, thus showing relative importance.
+#' @param negative Logical. If TRUE then negative values of \eqn{\lambda_G} are color-coded in blue, otherwise (default) only the positive values of \eqn{\lambda_G} are displayed in red. This only applies to HTML output.
+#' @param order.by A string indicating the order of the output. If "importance" (default) then the output is ordered by sentence \eqn{\lambda_G} in descending order, otherwise the text is displayed and ordered as it appears.
 #' @param cores The number of cores to use for parallel processing (the default is one).
 #'
 #' @references Nini, A., Halvani, O., Graner, L., Gherardi, V., Ishihara, S. Authorship Verification based on the Likelihood Ratio of Grammar Models. https://arxiv.org/abs/2403.08462v1
@@ -23,7 +25,7 @@
 #' outputs$table
 #'
 #' @export
-lambdaG_visualize <- function(q.data, k.data, ref.data, N = 10, r = 30, output = "html", print = "", scale = "absolute", cores = NULL){
+lambdaG_visualize <- function(q.data, k.data, ref.data, N = 10, r = 30, output = "html", print = "", scale = "absolute", negative = FALSE, order.by = "importance", cores = NULL){
 
   if(length(unique(quanteda::docvars(k.data, "author"))) != 1){
 
@@ -38,45 +40,56 @@ lambdaG_visualize <- function(q.data, k.data, ref.data, N = 10, r = 30, output =
   }
 
 
-  llr.table <- loglikelihood_table_avgllrs(q.data, k.data, ref.data, r, N, cores = cores)
+  llr.table <- loglikelihood_table_avgllrs(q.data, k.data, ref.data, r, N, order.by, cores = cores)
 
   # calculation of relative contribution in percentage
-  dplyr::filter(llr.table, lambdaG > 0) |> dplyr::pull(lambdaG) |> sum() -> pos.t.total
-  dplyr::filter(llr.table, lambdaG < 0) |> dplyr::pull(lambdaG) |> sum() -> neg.t.total
-  dplyr::slice_head(llr.table, n = 1, by = sentence_id) |> dplyr::filter(sentence_lambdaG > 0) |>
-    dplyr::pull(sentence_lambdaG) |> sum() -> pos.s.total
-  dplyr::slice_head(llr.table, n = 1, by = sentence_id) |> dplyr::filter(sentence_lambdaG < 0) |>
-    dplyr::pull(sentence_lambdaG) |> sum() -> neg.s.total
+  pos.t.total <- dplyr::filter(llr.table, lambdaG > 0) |>
+    dplyr::pull(lambdaG) |>
+    sum()
 
-  llr.table |>
-    dplyr::mutate(token_contribution = dplyr::case_when(lambdaG > 0 ~ round(lambdaG/pos.t.total*100, 2),
-                                                        lambdaG < 0 ~ round(-lambdaG/neg.t.total*100, 2),
-                                                        lambdaG == 0 ~ 0)) |>
-    dplyr::mutate(sent_contribution = dplyr::case_when(sentence_lambdaG > 0 ~
-                                                         round(sentence_lambdaG/pos.s.total*100, 2),
-                                                        sentence_lambdaG < 0 ~
-                                                         round(-sentence_lambdaG/neg.s.total*100, 2),
-                                                        sentence_lambdaG == 0 ~ 0)) ->
-    llr.table
+  neg.t.total <- dplyr::filter(llr.table, lambdaG < 0) |>
+    dplyr::pull(lambdaG) |>
+    sum()
 
+  pos.s.total <- dplyr::slice_head(llr.table, n = 1, by = sentence_id) |>
+    dplyr::filter(sentence_lambdaG > 0) |>
+    dplyr::pull(sentence_lambdaG) |>
+    sum()
+
+  neg.s.total <- dplyr::slice_head(llr.table, n = 1, by = sentence_id) |>
+    dplyr::filter(sentence_lambdaG < 0) |>
+    dplyr::pull(sentence_lambdaG) |>
+    sum()
+
+  llr.table <- llr.table |>
+    dplyr::mutate(
+      token_contribution = dplyr::case_when(
+        lambdaG > 0 ~ round(lambdaG/pos.t.total*100, 2),
+        lambdaG < 0 ~ round(-lambdaG/neg.t.total*100, 2),
+        lambdaG == 0 ~ 0
+      )
+    ) |>
+    dplyr::mutate(
+      sent_contribution = dplyr::case_when(
+        sentence_lambdaG > 0 ~ round(sentence_lambdaG/pos.s.total*100, 2),
+        sentence_lambdaG < 0 ~ round(-sentence_lambdaG/neg.s.total*100, 2),
+        sentence_lambdaG == 0 ~ 0
+      )
+    )
 
   if(output == "html"){
 
-    filename <- paste0(quanteda::docnames(q.data), ".html")
-    cc.text <- color_coding_html(llr.table, scale)
+    cc.text <- color_coding_html(llr.table, scale, negative = negative)
 
   }else if(output == "latex"){
 
-    filename <- paste0(quanteda::docnames(q.data), ".txt")
     cc.text <- color_coding_latex(llr.table, scale)
 
   }
 
   if(print != ""){
 
-    write(cc.text,
-          paste0(print, filename)
-          )
+    write(cc.text, print)
 
   }
 
@@ -85,7 +98,6 @@ lambdaG_visualize <- function(q.data, k.data, ref.data, N = 10, r = 30, output =
   return(output.list)
 
 }
-
 extract <- function(s, N){
 
   kgrams::kgram_freqs(s, N = N) |>
@@ -94,7 +106,6 @@ extract <- function(s, N){
   return(model)
 
 }
-
 loglikelihood_one_rep <- function(q.sents, k.sents, ref.sents, N, k.g, k.sent.probs){
 
   ref.g <- ref.sents |> sample(length(k.sents)) |> extract(N)
@@ -108,8 +119,9 @@ loglikelihood_one_rep <- function(q.sents, k.sents, ref.sents, N, k.g, k.sent.pr
     toks = s |> stringr::str_squish() |> stringr::str_split_1(" ")
     n_tokens = length(toks) + 1
 
-    res = data.frame(sentence_id = id, token_id = 1:n_tokens, t = character(n_tokens), k = numeric(n_tokens),
-                     ref = numeric(n_tokens), llr = numeric(n_tokens), sentence_llr = sllr)
+    res = data.frame(sentence_id = id, token_id = 1:n_tokens, t = character(n_tokens),
+                     k = numeric(n_tokens), ref = numeric(n_tokens), llr = numeric(n_tokens),
+                     sentence_llr = sllr)
 
     for (i in 1:n_tokens) {
       topred = ifelse(i < n_tokens, toks[i], kgrams::EOS())
@@ -132,8 +144,7 @@ loglikelihood_one_rep <- function(q.sents, k.sents, ref.sents, N, k.g, k.sent.pr
   return(table)
 
 }
-
-loglikelihood_table_avgllrs <- function(q.data, k.data, ref.data, r, N, cores){
+loglikelihood_table_avgllrs <- function(q.data, k.data, ref.data, r, N, order.by, cores){
 
   k.sents = as.character(k.data)
   ref.sents = as.character(ref.data)
@@ -142,38 +153,89 @@ loglikelihood_table_avgllrs <- function(q.data, k.data, ref.data, r, N, cores){
   k.g = extract(k.sents, N)
   k.sent.probs = kgrams::probability(q.sents, k.g)
 
-  pbapply::pbreplicate(r, loglikelihood_one_rep(q.sents, k.sents, ref.sents, N, k.g, k.sent.probs),
-                       simplify = FALSE, cl = cores) |>
+  final.table <- r |>
+    pbapply::pbreplicate(
+      loglikelihood_one_rep(q.sents, k.sents, ref.sents, N, k.g, k.sent.probs),
+      simplify = FALSE,
+      cl = cores
+    ) |>
     dplyr::bind_rows() |>
     dplyr::group_by(sentence_id, token_id, t) |>
     dplyr::summarise(lambdaG = mean(llr), sentence_lambdaG = round(mean(sentence_llr), 3)) |>
     dplyr::ungroup() |>
-    dplyr::mutate(zlambdaG = as.numeric(round(scale(lambdaG), 3))) |>
-    dplyr::arrange(desc(sentence_lambdaG), sentence_id, token_id) -> final.table
+    dplyr::mutate(zlambdaG = as.numeric(round(scale(lambdaG), 3)))
+
+  if(order.by == "importance"){
+
+    final.table <- dplyr::arrange(final.table, desc(sentence_lambdaG), sentence_id, token_id)
+
+  }
 
   return(final.table)
 
 }
-
-color_coding_html <- function(llr.table, scale){
+color_coding_html <- function(llr.table, scale, negative){
 
   if(scale == "absolute"){
 
-    llr.table |> dplyr::mutate(color = dplyr::case_when(lambdaG > 0 & lambdaG < 1 ~ "#fdedec",
-                                                        lambdaG >= 1 & lambdaG < 2 ~ "#f5b7b1",
-                                                        lambdaG >= 2 & lambdaG < 3 ~ "#ec7063",
-                                                        lambdaG >= 3 & lambdaG <= 4 ~ "#cb4335",
-                                                        lambdaG > 4 ~ "#943126",
-                                                        .default = "")) -> table2
+    table2 <- llr.table |>
+      dplyr::mutate(
+        color = dplyr::case_when(
+          lambdaG > 0 & lambdaG < 0.5 ~ "#FFFFFF",
+          lambdaG >= 0.5 & lambdaG < 1 ~ "#fdedec",
+          lambdaG >= 1 & lambdaG < 2 ~ "#f5b7b1",
+          lambdaG >= 2 & lambdaG < 3 ~ "#ec7063",
+          lambdaG >= 3 & lambdaG <= 4 ~ "#cb4335",
+          lambdaG > 4 ~ "#943126",
+          .default = ""
+        )
+      )
+
+    if(negative == TRUE){
+
+      table2 <- table2 |>
+        dplyr::mutate(
+          color = dplyr::case_when(
+            lambdaG < 0 & lambdaG > -0.5 ~ "#FFFFFF",
+            lambdaG <= -0.5 & lambdaG > -1 ~ "#d1e5f0",
+            lambdaG <= -1 & lambdaG > -2 ~ "#92c5de",
+            lambdaG <= -2 & lambdaG > -3 ~ "#4393c3",
+            lambdaG <= -3 & lambdaG >= -4 ~ "#2166ac",
+            lambdaG < -4 ~ "#053061",
+            .default = color
+          )
+        )
+
+    }
 
   }
 
   if(scale == "relative"){
 
-    llr.table |> dplyr::mutate(color = dplyr::case_when(zlambdaG > 0.5 & zlambdaG <= 1 ~ "#FADBD8",
-                                                        zlambdaG > 1 & zlambdaG <= 2 ~ "#F1948A",
-                                                        zlambdaG > 2 ~ "#E74C3C",
-                                                        .default = "")) -> table2
+    table2 <- llr.table |>
+      dplyr::mutate(
+        color = dplyr::case_when(
+          zlambdaG > 0.5 & zlambdaG <= 1 ~ "#FADBD8",
+          zlambdaG > 1 & zlambdaG <= 2 ~ "#F1948A",
+          zlambdaG > 2 ~ "#E74C3C",
+          .default = ""
+        )
+      )
+
+    if(negative == TRUE){
+
+      table2 <- table2 |>
+        dplyr::mutate(
+          color = dplyr::case_when(
+            zlambdaG < -0.5 & zlambdaG >= -1 ~ "#d1e5f0",
+            zlambdaG < -1 & zlambdaG >= -2 ~ "#67a9cf",
+            zlambdaG < -2 ~ "#2166ac",
+            .default = color
+          )
+        )
+
+    }
+
   }
 
   string = c()
@@ -199,7 +261,6 @@ color_coding_html <- function(llr.table, scale){
   return(string)
 
 }
-
 color_coding_latex <- function(llr.table, scale){
 
   if(scale == "absolute"){
