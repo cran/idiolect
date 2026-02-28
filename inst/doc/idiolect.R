@@ -8,7 +8,7 @@ knitr::opts_chunk$set(
 library(idiolect)
 
 ## ----eval=FALSE, include=TRUE-------------------------------------------------
-#  corpus <- create_corpus("path/to/folder")
+# corpus <- create_corpus("path/to/folder")
 
 ## -----------------------------------------------------------------------------
 corpus <- enron.sample
@@ -17,41 +17,48 @@ corpus <- enron.sample
 corpus
 
 ## ----eval=FALSE, include=TRUE-------------------------------------------------
-#  posnoised.corpus <- contentmask(corpus, model = "en_core_web_sm", algorithm = "POSnoise")
+# posnoised.corpus <- contentmask(corpus, model = "en_core_web_sm", algorithm = "POSnoise")
+
+## ----eval=FALSE, include=TRUE-------------------------------------------------
+# install.packages("spacyr")
+# spacyr::install_spacy()
 
 ## -----------------------------------------------------------------------------
-Q <- corpus_subset(corpus, author == "Kw")[1]
-K <- corpus_subset(corpus, author == "Kw")[2:5]
-R <- corpus_subset(corpus, author != "Kw")
+Q <- corpus_subset(corpus, author == "Kimberly_w" & textname == "Mail_3")
+K <- corpus_subset(corpus, author == "Kimberly_w" & textname != "Mail_3")
+R <- corpus_subset(corpus, author != "Kimberly_w")
 
 ## -----------------------------------------------------------------------------
-vectorize(Q, tokens = "word", remove_punct = F, remove_symbols = T, remove_numbers = T,
-          lowercase = T, n = 1, weighting = "rel", trim = F) |> 
+vectorize(Q, tokens = "word", remove_punct = FALSE, remove_symbols = TRUE, remove_numbers = TRUE,
+          lowercase = TRUE, n = 1, weighting = "rel", trim = FALSE) |> 
   print(max_nfeat = 3)
 
 ## -----------------------------------------------------------------------------
-vectorize(Q, tokens = "character", remove_punct = F, remove_symbols = T, remove_numbers = T,
-          lowercase = T, n = 4, weighting = "rel", trim = T, threshold = 1000) |> 
+vectorize(Q, tokens = "character", remove_punct = FALSE, remove_symbols = TRUE, remove_numbers = TRUE,
+          lowercase = TRUE, n = 4, weighting = "rel", trim = TRUE, threshold = 1000) |> 
   print(max_nfeat = 3)
 
 ## -----------------------------------------------------------------------------
 validation <- K + R
 
+## ----include=FALSE------------------------------------------------------------
+set.seed(22)
+
 ## -----------------------------------------------------------------------------
-validation.Q <- corpus_subset(validation, grepl("^unknown", docnames(validation)))
-validation.K <- corpus_subset(validation, grepl("^known", docnames(validation)))
+validation.Q <- corpus_sample(validation, size = 1, by = author)
+validation.K <- corpus_subset(validation, !docnames(validation) %in% docnames(validation.Q))
 
 ## ----include=FALSE------------------------------------------------------------
-set.seed(2)
+set.seed(5)
 
 ## ----warning=FALSE------------------------------------------------------------
-res <- impostors(validation.Q, validation.K, validation.K, algorithm = "RBI", k = 50)
+res <- impostors(validation.Q, validation.K, validation.K, algorithm = "RBI", k = 10)
 
 ## ----paged.print=TRUE---------------------------------------------------------
 res[1:10,]
 
 ## ----message=FALSE, warning=FALSE, paged.print=TRUE---------------------------
-p <- performance(res)
+p <- performance(res, progress = FALSE)
 p$evaluation
 
 ## ----fig.height=4, fig.width=6, fig.dpi=110-----------------------------------
@@ -61,7 +68,7 @@ density_plot(res)
 set.seed(10)
 
 ## ----warning=FALSE------------------------------------------------------------
-q.res <- impostors(Q, K, R, algorithm = "RBI", k = 50)
+q.res <- impostors(Q, K, R, algorithm = "RBI", k = 10)
 
 ## -----------------------------------------------------------------------------
 q.res
@@ -70,7 +77,7 @@ q.res
 set.seed(2)
 
 ## ----message=FALSE, warning=FALSE---------------------------------------------
-q.res2 <- impostors(Q, K, R, algorithm = "RBI", k = 50, features = T)
+q.res2 <- impostors(Q, K, R, algorithm = "RBI", k = 10, features = TRUE)
 strwrap(q.res2$features, width = 70)
 
 ## -----------------------------------------------------------------------------

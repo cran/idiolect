@@ -1,3 +1,15 @@
+# idiolect 1.2.0
+
+* minor bug fixes
+
+* `contentmask()` no longer has the option to replace ASCII; removed dependency on `textclean` package.
+
+* `contentmask()` used with the "frames" algorithm now adopts the Universal POS-tags, making it more compatible with other languages.
+
+* `create_corpus()` tests for the correct syntax of the file names and returns an error if not correct (plus showing which file names are incorrect).
+
+* `create_corpus()` includes an argument to specify the encoding of the texts.
+
 # idiolect 1.1.1
 
 * minor bug fixes
